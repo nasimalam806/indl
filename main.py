@@ -1,133 +1,122 @@
 import os
-import glob
+import requests
 import asyncio
-import instaloader
-import time
-import random
 from pyrogram import Client, filters
 
 # ==========================================
-# 1. BOT & CHANNEL CREDENTIALS (SECURE)
+# 1. BOT, CHANNEL & API CREDENTIALS
 # ==========================================
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1002443275235  
 
-INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
-PROXY_URL = os.environ.get("PROXY_URL") 
+# RapidAPI Key
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
-# 2. INSTALOADER SETUP (FAST + LOGIN + PROXY)
-# ==========================================
-L = instaloader.Instaloader(
-    download_pictures=True, 
-    download_video_thumbnails=False, 
-    download_geotags=False, 
-    download_comments=False, 
-    save_metadata=False,
-    request_timeout=15,         
-    max_connection_attempts=1   
-)
-
-# 🔥 Proxy add karne ka Sahi Tareeka 🔥
-if PROXY_URL:
-    L.context._session.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
-    print(f"✅ Proxy Set to: {PROXY_URL}")
-
-# Login process
-if INSTA_SESSION:
-    try:
-        L.context._session.cookies.set('sessionid', INSTA_SESSION, domain='instagram.com')
-        L.test_login()
-        print("✅ Insta Logged In Successfully!")
-    except Exception as e:
-        print(f"⚠️ Insta Login Failed: {e}")
-
-# Fake Headers
-L.context._session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-})
-
-# ==========================================
-# 3. MAIN DOWNLOAD FUNCTION (Isko purane jaisa hi rakhein)
-# ==========================================
-# ... yahan se neeche ka aapka code pehle jaisa hi rahega ...
-# ==========================================
-# 3. MAIN DOWNLOAD FUNCTION
+# 2. MAIN DOWNLOAD FUNCTION (RAPIDAPI METHOD)
 # ==========================================
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Insta Profile Downloader me swagat hai!\nUsage: `/insta username`")
+        await message.reply_text("🚀 API Insta Downloader me swagat hai!\nUsage: `/insta username`\nExample: `/insta therock`")
         return
 
     if len(message.command) < 2:
-        await message.reply_text("⚠️ Bhai, username ya link dena padega!")
+        await message.reply_text("⚠️ Bhai, username ya link dena padega!\nAise likho: `/insta therock`")
         return
 
+    # Link ya username clean karna
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 Checking profile: **{target_username}**...")
-
-    def download_posts():
-        try:
-            profile = instaloader.Profile.from_username(L.context, target_username)
-            count = 0
-            for post in profile.get_posts():
-                if count >= 3: 
-                    break
-                # Human delay lagaya gaya hai
-                time.sleep(random.uniform(5, 10)) 
-                L.download_post(post, target=target_username)
-                count += 1
-            return True, "Success"
-        except Exception as e:
-            return False, str(e)
-
-    await status_msg.edit_text(f"⏳ Downloading recent 3 posts of **{target_username}**... (Max wait: 45s)")
     
+    status_msg = await message.reply_text(f"🔍 RapidAPI se **{target_username}** ka data nikal raha hu... (No Blocks, Superfast ⚡)")
+
+    # ==========================================
+    # 3. FETCH DATA FROM RAPIDAPI
+    # ==========================================
+    url = "https://instagram-scraper-stable-api.p.rapidapi.com/get_ig_user_posts.php"
+    
+    payload = {
+        "username_or_url": f"https://www.instagram.com/{target_username}/",
+        "amount": "5"  # Abhi top 5 posts nikalenge
+    }
+    
+    headers = {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-rapidapi-host": "instagram-scraper-stable-api.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY
+    }
+
     try:
-        success, error_msg = await asyncio.wait_for(asyncio.to_thread(download_posts), timeout=60.0)
-    except asyncio.TimeoutError:
-        await status_msg.edit_text("❌ Instagram Server Error (Timeout). Connection hang ho gaya, IG ne IP temporarily block kardi hai.")
+        # API call in background (non-blocking)
+        response = await asyncio.to_thread(requests.post, url, data=payload, headers=headers)
+        data = response.json()
+    except Exception as e:
+        await status_msg.edit_text(f"❌ API Request Failed: {e}")
         return
 
-    if not success:
-        await status_msg.edit_text(f"❌ Instagram Error: {error_msg}\n\n(Note: Account private ya delete ho sakta hai, ya Session ID expire ho gaya hai)")
+    # Error checking in API response
+    if "error" in data or response.status_code != 200:
+        await status_msg.edit_text(f"❌ API ne error diya: {data.get('message', 'Unknown Error')}")
         return
 
-    await status_msg.edit_text("📤 Uploading files to Telegram Channel...")
-
     # ==========================================
-    # 4. UPLOAD & CLEANUP
+    # 4. PARSE MEDIA URLS FROM JSON
     # ==========================================
-    folder_path = target_username
-    upload_count = 0
+    media_list = []
     
-    if os.path.exists(folder_path):
-        media_files = glob.glob(f"{folder_path}/*")
+    # API ke JSON structure se posts nikalna
+    items = data.get('data', {}).get('items', []) or data.get('items', []) or data.get('data', [])
+    
+    if not items:
+        await status_msg.edit_text(f"⚠️ **{target_username}** ki profile me koi post nahi mili ya account private hai.")
+        return
+
+    for item in items[:5]: # Top 5
+        # Agar Carousel (Album/Multiple Photos) hai
+        if item.get('carousel_media'):
+            first_media = item['carousel_media'][0]
+            if first_media.get('video_versions'):
+                media_list.append((first_media['video_versions'][0]['url'], 'video'))
+            elif first_media.get('image_versions2'):
+                media_list.append((first_media['image_versions2']['candidates'][0]['url'], 'photo'))
         
-        for file in media_files:
-            try:
-                caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
-                if file.endswith(".mp4"):
-                    await app.send_video(CHANNEL_ID, video=file, caption=caption_text)
-                    upload_count += 1
-                elif file.endswith(".jpg"):
-                    await app.send_photo(CHANNEL_ID, photo=file, caption=caption_text)
-                    upload_count += 1
-                os.remove(file)
-            except Exception as e:
-                if os.path.exists(file): os.remove(file)
-        
-        try: os.rmdir(folder_path)
-        except: pass
+        # Agar single Video hai
+        elif item.get('video_versions'):
+            media_list.append((item['video_versions'][0]['url'], 'video'))
             
-    await status_msg.edit_text(f"✅ Success! **{upload_count}** posts/reels sent to channel.")
+        # Agar single Photo hai
+        elif item.get('image_versions2'):
+            media_list.append((item['image_versions2']['candidates'][0]['url'], 'photo'))
+
+    if not media_list:
+        await status_msg.edit_text("⚠️ Data toh mila, par media URLs nikalne me dikkat aayi.")
+        return
+
+    await status_msg.edit_text(f"📥 {len(media_list)} Media files mil gayi! Telegram channel me bhej raha hu...")
+
+    # ==========================================
+    # 5. UPLOAD TO CHANNEL
+    # ==========================================
+    upload_count = 0
+    caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
+
+    for media_url, m_type in media_list:
+        try:
+            if m_type == 'video':
+                await app.send_video(CHANNEL_ID, video=media_url, caption=caption_text)
+            else:
+                await app.send_photo(CHANNEL_ID, photo=media_url, caption=caption_text)
+            upload_count += 1
+            await asyncio.sleep(1) # Flood wait bachane ke liye chota sa delay
+        except Exception as e:
+            print(f"Failed to send to Telegram: {e}")
+            
+    await status_msg.edit_text(f"✅ Success! **{upload_count}** posts aapke channel pe upload ho gaye hain! 🚀")
 
 if __name__ == "__main__":
+    print("🚀 API Insta Downloader Bot Started Successfully!")
     app.run()
-    
