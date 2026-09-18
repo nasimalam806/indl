@@ -20,28 +20,34 @@ app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN,
 
 # Apify Client Initialize karna
 apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
-
 # ==========================================
 # 2. APIFY LINK EXTRACTOR FUNCTION
 # ==========================================
 def get_links_from_apify(username):
-    # Apify ke "Instagram Scraper" actor ko call kar rahe hain
+    # Actor ke input settings (Top 5 posts laane ke liye)
     run_input = {
         "usernames": [username],
-        "resultsLimit": 5, # Top 5 posts layega
+        "resultsLimit": 5, 
     }
     
-    # Actor run karna (Background me scrape karega)
+    # Run start karo aur wait karo
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
     
-    # Result dataset se links nikalna
+    # ⚠️ FIX: Object dictionary format dictionary ki bajaye get() lagakar nikalna hai
+    # Apify Client version ke hisaab se run ko as dict treat karne ke bajaye seedha uski properties access karenge
+    dataset_id = run.get("defaultDatasetId") 
+    
     links = []
-    for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
-        if "url" in item:
-            links.append(item["url"])
-            
+    
+    if dataset_id:
+        # Dataset se items (rows) fetch karo
+        items = apify_client.dataset(dataset_id).list_items().items
+        for item in items:
+            # Agar URL hai post/reel ki
+            if "url" in item:
+                links.append(item["url"])
+                
     return links
-
 # ==========================================
 # 3. YT-DLP DOWNLOADER FUNCTION
 # ==========================================
