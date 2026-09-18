@@ -8,9 +8,9 @@ from apify_client import ApifyClient
 # ==========================================
 # 1. CREDENTIALS & VARIABLES
 # ==========================================
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL_ID = -1002443275235  
 
 INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
@@ -18,54 +18,50 @@ APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
-# Apify Client Initialize karna
+# Apify Client Setup
 apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
+
 # ==========================================
-# 2. APIFY LINK EXTRACTOR FUNCTION
-# ==========================================
-# 2. APIFY LINK EXTRACTOR FUNCTION
+# 2. APIFY LINK EXTRACTOR (PERFECT PARSER)
 # ==========================================
 def get_links_from_apify(username):
-    # Actor ke input settings
+    # ⚠️ THE REAL FIX: Apify ko sahi format me URL bhejna!
     run_input = {
-        "usernames": [username],
-        "resultsLimit": 5, 
+        "directUrls": [f"https://www.instagram.com/{username}/"],
+        "resultsType": "posts",
+        "resultsLimit": 5
     }
     
-    # Run start karo aur wait karo
+    # Run the actor
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
     
-    # ⚠️ FINAL FIX: Ab hum isko Object ki tarah handle kar rahe hain, Dictionary ki tarah nahi.
-    # Agar direct object attribute hai:
-    if hasattr(run, 'default_dataset_id'):
-        dataset_id = run.default_dataset_id
-    elif hasattr(run, 'defaultDatasetId'):
-        dataset_id = run.defaultDatasetId
-    # Agar dictionary structure me aaya (fallback):
-    elif isinstance(run, dict):
+    # ⚠️ SAFETY NET: Apify object de ya dictionary, ye code dono me se ID nikal lega
+    if isinstance(run, dict):
         dataset_id = run.get('defaultDatasetId') or run.get('default_dataset_id')
     else:
-        # Pata nahi kya format hai, error print kardo
-        raise Exception(f"Unknown Apify run format: {type(run)}")
+        dataset_id = getattr(run, 'defaultDatasetId', None) or getattr(run, 'default_dataset_id', None)
+
+    if not dataset_id:
+        raise Exception("Apify se Dataset ID nahi mili. Dashboard check karein.")
 
     links = []
     
-    if dataset_id:
-        # Dataset se items nikalna
-        items = apify_client.dataset(dataset_id).list_items().items
-        for item in items:
-            # Apify 'url' ki jagah kabhi kabhi 'inputUrl' ya media details me link deta hai
-            if "url" in item:
-                links.append(item["url"])
-            elif "inputUrl" in item:
-                links.append(item["inputUrl"])
-                
-    return links
+    # Fetch Data from Dataset
+    items = apify_client.dataset(dataset_id).list_items().items
+    for item in items:
+        # Humein post ki main link chahiye jo yt-dlp download karega
+        post_url = item.get("url")
+        if post_url and ("instagram.com/p/" in post_url or "instagram.com/reel/" in post_url):
+            links.append(post_url)
+            
+    # Remove duplicates if any
+    return list(set(links))
+
 # ==========================================
 # 3. YT-DLP DOWNLOADER FUNCTION
 # ==========================================
 def download_with_ytdl(links, username):
-    # Cookie file banana taaki IG block na kare
+    # Cookie Setup
     if INSTA_SESSION:
         cookie_text = f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n"
         with open("cookies.txt", "w") as f:
@@ -97,7 +93,7 @@ def download_with_ytdl(links, username):
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Apify + yt-dlp Downloader me swagat hai!\nUsage: `/insta username`")
+        await message.reply_text("🚀 Premium Apify + yt-dlp Bot!\nUsage: `/insta username`")
         return
 
     if len(message.command) < 2:
@@ -109,7 +105,7 @@ async def fetch_insta(client, message):
         return
 
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** ke post links nikal raha hu... (इसमें 10-20 सेकंड लग सकते हैं)")
+    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** ke links fetch ho rahe hain...\n(Isme 20-30 second lag sakte hain, dhairya rakhein ⏳)")
 
     # --- 1. APIFY SE LINKS NIKALNA ---
     try:
@@ -122,7 +118,7 @@ async def fetch_insta(client, message):
         await status_msg.edit_text(f"⚠️ **{target_username}** ki profile me koi post nahi mili ya account private hai.")
         return
 
-    await status_msg.edit_text(f"🔗 **{len(post_links)}** Links successfully mil gaye!\n⏳ Ab `yt-dlp` unhe download kar raha hai...")
+    await status_msg.edit_text(f"🔗 **{len(post_links)}** Links Apify se mil gaye!\n⏳ Ab `yt-dlp` unhe original quality me download kar raha hai...")
 
     # --- 2. YT-DLP SE DOWNLOAD KARNA ---
     success, err = await asyncio.to_thread(download_with_ytdl, post_links, target_username)
@@ -155,11 +151,11 @@ async def fetch_insta(client, message):
         except: pass
             
     if upload_count > 0:
-        await status_msg.edit_text(f"✅ Success! **{upload_count}** media files Apify aur yt-dlp ke zariye upload ho chuki hain! 🚀")
+        await status_msg.edit_text(f"✅ Success! **{upload_count}** media files Apify aur yt-dlp se upload ho chuki hain! 🚀")
     else:
-        await status_msg.edit_text(f"⚠️ Download failed.\nyt-dlp Error: {err}")
+        await status_msg.edit_text(f"⚠️ Apify links laya par yt-dlp download nahi kar paya.\nyt-dlp Error: {err}")
 
 if __name__ == "__main__":
-    print("🚀 Apify + yt-dlp Bot Started!")
+    print("🚀 Premium Apify + yt-dlp Bot Started!")
     app.run()
     
