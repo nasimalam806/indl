@@ -5,6 +5,7 @@ import instaloader
 import time
 import random
 from pyrogram import Client, filters
+import urllib.request # Naya import
 
 # ==========================================
 # 1. BOT & CHANNEL CREDENTIALS (SECURE)
@@ -15,20 +16,28 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1002443275235  
 
 INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
+PROXY_URL = os.environ.get("PROXY_URL") # Proxy URL nikal li
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
-# 2. INSTALOADER SETUP (FAST + LOGIN)
+# 2. INSTALOADER SETUP (FAST + LOGIN + PROXY)
 # ==========================================
+
+# Proxy Setup for Instaloader requests
+proxies = None
+if PROXY_URL:
+    proxies = {'http': PROXY_URL, 'https': PROXY_URL}
+
 L = instaloader.Instaloader(
     download_pictures=True, 
     download_video_thumbnails=False, 
     download_geotags=False, 
     download_comments=False, 
     save_metadata=False,
-    request_timeout=15,         # 🔥 15 second se zyada hang nahi hoga
-    max_connection_attempts=1   # 🔥 Infinite loop me nahi fasega
+    request_timeout=15,         
+    max_connection_attempts=1,   
+    proxies=proxies # Proxy add ki gayi!
 )
 
 # Login process
@@ -69,7 +78,8 @@ async def fetch_insta(client, message):
             for post in profile.get_posts():
                 if count >= 3: 
                     break
-                time.sleep(random.uniform(2, 5)) 
+                # Human delay lagaya gaya hai
+                time.sleep(random.uniform(5, 10)) 
                 L.download_post(post, target=target_username)
                 count += 1
             return True, "Success"
@@ -78,7 +88,6 @@ async def fetch_insta(client, message):
 
     await status_msg.edit_text(f"⏳ Downloading recent 3 posts of **{target_username}**... (Max wait: 45s)")
     
-    # 🔥 Yahan Hard Timeout lagaya hai. 60 second me cancel kar dega agar hang hua
     try:
         success, error_msg = await asyncio.wait_for(asyncio.to_thread(download_posts), timeout=60.0)
     except asyncio.TimeoutError:
@@ -120,3 +129,4 @@ async def fetch_insta(client, message):
 
 if __name__ == "__main__":
     app.run()
+    
