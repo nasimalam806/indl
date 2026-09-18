@@ -26,19 +26,18 @@ apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 # 2. APIFY DATA EXTRACTOR & SEPARATOR
 # ==========================================
 def extract_media_from_apify(username):
-    # 🔥 Main Profile aur Reels dono ko target kar rahe hain
+    # 🔥 MAX LIMIT SET: Ab ye profile ko end tak scrape karega
     run_input = {
         "directUrls": [
             f"https://www.instagram.com/{username}/",
             f"https://www.instagram.com/{username}/reels/"
         ],
         "resultsType": "posts",
-        "resultsLimit": 10  # Dono mix karke top 10 results layega
+        "resultsLimit": 9999  # Pura max fetch karne ke liye
     }
     
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
     
-    # Dataset ID nikalne ka bulletproof tarika
     if isinstance(run, dict):
         dataset_id = run.get('defaultDatasetId') or run.get('default_dataset_id')
     else:
@@ -49,34 +48,34 @@ def extract_media_from_apify(username):
 
     items = apify_client.dataset(dataset_id).list_items().items
     
-    video_ig_links = [] # yt-dlp ke liye (Reels & Videos)
-    direct_image_urls = [] # requests/direct download ke liye (Photos)
+    video_ig_links = []
+    direct_image_urls = []
     
     for item in items:
         item_type = item.get("type")
         ig_post_url = item.get("url")
         
-        # 1. Agar Video ya Reel hai
+        # Reels / Videos
         if item_type == "Video":
             video_ig_links.append(ig_post_url)
             
-        # 2. Agar Single Image hai
+        # Single Image
         elif item_type == "Image":
             img_url = item.get("displayUrl")
             if img_url:
                 direct_image_urls.append(img_url)
                 
-        # 3. Agar Sidecar (Carousel / Multiple Photos) hai
+        # Carousel / Sidecar
         elif item_type == "Sidecar":
             images = item.get("images", [])
             for img in images:
                 direct_image_urls.append(img)
-            # Agar sidecar me koi video bhi chupa hai
+            
+            # Check for carousel video
             if item.get("videoUrl"):
                 video_ig_links.append(ig_post_url)
                 
-    # Duplicates hatane ke liye list(set())
-    return list(set(video_ig_links)), list(set(direct_image_urls)), items[:1]
+    return list(set(video_ig_links)), list(set(direct_image_urls))
 
 # ==========================================
 # 3. YT-DLP VIDEO DOWNLOADER
@@ -94,7 +93,7 @@ def download_videos_ytdl(links, username):
         'quiet': True,
         'no_warnings': True,
         'format': 'best',
-        'ignoreerrors': True, # Video download me chota error aaye to crash nahi hoga
+        'ignoreerrors': True,
     }
     
     if INSTA_SESSION: ydl_opts['cookiefile'] = 'cookies.txt'
@@ -114,7 +113,7 @@ def download_videos_ytdl(links, username):
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Ultimate APIFY + yt-dlp Bot!\nUsage: `/insta username`")
+        await message.reply_text("🚀 Bulk Insta Downloader Bot!\nUsage: `/insta username`")
         return
 
     if len(message.command) < 2:
@@ -122,11 +121,10 @@ async def fetch_insta(client, message):
         return
 
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** ke Posts aur Reels dhundh raha hu...")
+    status_msg = await message.reply_text(f"🔍 **{target_username}** ki poori profile aur reels scan ho rahi hain...\n(Max posts hain, 1-2 minute lag sakte hain ⏳)")
 
-    # --- 1. GET DATA & SEPARATE LINKS ---
     try:
-        video_links, image_urls, raw_data = await asyncio.to_thread(extract_media_from_apify, target_username)
+        video_links, image_urls = await asyncio.to_thread(extract_media_from_apify, target_username)
     except Exception as e:
         await status_msg.edit_text(f"❌ Apify Error: {e}")
         return
@@ -135,7 +133,7 @@ async def fetch_insta(client, message):
         await status_msg.edit_text(f"⚠️ Koi post ya reel nahi mili.")
         return
 
-    await status_msg.edit_text(f"🔗 Analysis Complete!\n🎥 Reels/Videos (yt-dlp): **{len(video_links)}**\n📸 Photos (Direct): **{len(image_urls)}**\n\n⏳ Ab Download aur Upload start ho raha hai...")
+    await status_msg.edit_text(f"🔗 Analysis Complete!\n🎥 Reels/Videos (yt-dlp): **{len(video_links)}**\n📸 Photos (Direct): **{len(image_urls)}**\n\n⏳ Ab Bulk Download aur Upload start ho raha hai (Flood-Wait Protection Active 🛡️)...")
 
     if not os.path.exists(target_username):
         os.makedirs(target_username)
@@ -143,7 +141,9 @@ async def fetch_insta(client, message):
     upload_count = 0
     caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
 
-    # --- 2. FAST DIRECT DOWNLOAD FOR IMAGES ---
+    # ==========================================
+    # 5. DOWNLOAD & UPLOAD PHOTOS (WITH BATCH DELAY)
+    # ==========================================
     for i, img_url in enumerate(image_urls):
         try:
             temp_img = f"{target_username}/photo_{i}_{int(time.time())}.jpg"
@@ -155,12 +155,22 @@ async def fetch_insta(client, message):
                 await app.send_photo(CHANNEL_ID, photo=temp_img, caption=caption_text)
                 upload_count += 1
                 os.remove(temp_img)
-            await asyncio.sleep(1)
+
+                # 🔥 FLOOD WAIT PROTECTION (Every 10 uploads -> 12 sec sleep)
+                if upload_count % 10 == 0:
+                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} files. Flood-wait se bachne ke liye 12 seconds break le raha hu... 💤")
+                    await asyncio.sleep(12)
+                else:
+                    await asyncio.sleep(1.5) # Normal delay
         except Exception as e:
             print(f"Direct Image DL failed: {e}")
 
-    # --- 3. YT-DLP DOWNLOAD FOR VIDEOS/REELS ---
+    # ==========================================
+    # 6. DOWNLOAD & UPLOAD VIDEOS (WITH BATCH DELAY)
+    # ==========================================
     if video_links:
+        # First download all videos via yt-dlp
+        await status_msg.edit_text(f"📥 Videos download ho rahi hain (yt-dlp). Uploading resume hogi jaldi hi... ({upload_count} done)")
         success, err = await asyncio.to_thread(download_videos_ytdl, video_links, target_username)
         
         video_files = glob.glob(f"{target_username}/*.mp4")
@@ -169,7 +179,13 @@ async def fetch_insta(client, message):
                 await app.send_video(CHANNEL_ID, video=file, caption=caption_text)
                 upload_count += 1
                 os.remove(file)
-                await asyncio.sleep(1)
+                
+                # 🔥 FLOOD WAIT PROTECTION (Every 10 uploads -> 12 sec sleep)
+                if upload_count % 10 == 0:
+                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} files. Flood-wait se bachne ke liye 12 seconds break le raha hu... 💤")
+                    await asyncio.sleep(12)
+                else:
+                    await asyncio.sleep(1.5) # Normal delay
             except Exception as e:
                 print(f"Video Upload Error: {e}")
 
@@ -178,17 +194,10 @@ async def fetch_insta(client, message):
     except: pass
 
     if upload_count > 0:
-        await status_msg.edit_text(f"✅ Success! **{upload_count}** Media Files (Photos + Reels) channel pe upload ho chuki hain! 🚀🔥")
+        await status_msg.edit_text(f"✅ BINGO! **{upload_count}** Media Files (Photos + Reels) channel pe successfully upload ho chuki hain! 🚀🔥")
     else:
         await status_msg.edit_text(f"⚠️ Media mili par upload nahi ho payi. Logs check karein.")
 
-    # Show raw JSON debug (1st post)
-    try:
-        raw_data_str = json.dumps(raw_data, indent=2, ensure_ascii=False)[:3500]
-        await message.reply_text(f"🛠️ **APIFY RAW DATA (1 Post Sample):**\n```json\n{raw_data_str}\n```")
-    except:
-        pass
-
 if __name__ == "__main__":
-    print("🚀 Ultimate Apify + yt-dlp Bot Started!")
+    print("🚀 Ultimate Bulk Downloader Bot Started!")
     app.run()
