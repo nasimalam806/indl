@@ -23,8 +23,10 @@ apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 # ==========================================
 # 2. APIFY LINK EXTRACTOR FUNCTION
 # ==========================================
+# 2. APIFY LINK EXTRACTOR FUNCTION
+# ==========================================
 def get_links_from_apify(username):
-    # Actor ke input settings (Top 5 posts laane ke liye)
+    # Actor ke input settings
     run_input = {
         "usernames": [username],
         "resultsLimit": 5, 
@@ -33,19 +35,30 @@ def get_links_from_apify(username):
     # Run start karo aur wait karo
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
     
-    # ⚠️ FIX: Object dictionary format dictionary ki bajaye get() lagakar nikalna hai
-    # Apify Client version ke hisaab se run ko as dict treat karne ke bajaye seedha uski properties access karenge
-    dataset_id = run.get("defaultDatasetId") 
-    
+    # ⚠️ FINAL FIX: Ab hum isko Object ki tarah handle kar rahe hain, Dictionary ki tarah nahi.
+    # Agar direct object attribute hai:
+    if hasattr(run, 'default_dataset_id'):
+        dataset_id = run.default_dataset_id
+    elif hasattr(run, 'defaultDatasetId'):
+        dataset_id = run.defaultDatasetId
+    # Agar dictionary structure me aaya (fallback):
+    elif isinstance(run, dict):
+        dataset_id = run.get('defaultDatasetId') or run.get('default_dataset_id')
+    else:
+        # Pata nahi kya format hai, error print kardo
+        raise Exception(f"Unknown Apify run format: {type(run)}")
+
     links = []
     
     if dataset_id:
-        # Dataset se items (rows) fetch karo
+        # Dataset se items nikalna
         items = apify_client.dataset(dataset_id).list_items().items
         for item in items:
-            # Agar URL hai post/reel ki
+            # Apify 'url' ki jagah kabhi kabhi 'inputUrl' ya media details me link deta hai
             if "url" in item:
                 links.append(item["url"])
+            elif "inputUrl" in item:
+                links.append(item["inputUrl"])
                 
     return links
 # ==========================================
