@@ -1,4 +1,4 @@
 pyrogram
 tgcrypto
-instagrapi
 requests
+yt-dlp
