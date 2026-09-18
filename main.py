@@ -5,7 +5,6 @@ import instaloader
 import time
 import random
 from pyrogram import Client, filters
-import urllib.request # Naya import
 
 # ==========================================
 # 1. BOT & CHANNEL CREDENTIALS (SECURE)
@@ -16,19 +15,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1002443275235  
 
 INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
-PROXY_URL = os.environ.get("PROXY_URL") # Proxy URL nikal li
+PROXY_URL = os.environ.get("PROXY_URL") 
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
 # 2. INSTALOADER SETUP (FAST + LOGIN + PROXY)
 # ==========================================
-
-# Proxy Setup for Instaloader requests
-proxies = None
-if PROXY_URL:
-    proxies = {'http': PROXY_URL, 'https': PROXY_URL}
-
 L = instaloader.Instaloader(
     download_pictures=True, 
     download_video_thumbnails=False, 
@@ -36,9 +29,13 @@ L = instaloader.Instaloader(
     download_comments=False, 
     save_metadata=False,
     request_timeout=15,         
-    max_connection_attempts=1,   
-    proxies=proxies # Proxy add ki gayi!
+    max_connection_attempts=1   
 )
+
+# 🔥 Proxy add karne ka Sahi Tareeka 🔥
+if PROXY_URL:
+    L.context._session.proxies = {'http': PROXY_URL, 'https': PROXY_URL}
+    print(f"✅ Proxy Set to: {PROXY_URL}")
 
 # Login process
 if INSTA_SESSION:
@@ -55,6 +52,10 @@ L.context._session.headers.update({
     'Accept-Language': 'en-US,en;q=0.9',
 })
 
+# ==========================================
+# 3. MAIN DOWNLOAD FUNCTION (Isko purane jaisa hi rakhein)
+# ==========================================
+# ... yahan se neeche ka aapka code pehle jaisa hi rahega ...
 # ==========================================
 # 3. MAIN DOWNLOAD FUNCTION
 # ==========================================
