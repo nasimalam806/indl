@@ -4,8 +4,9 @@ import asyncio
 import yt_dlp
 import requests
 import time
-import json
+import shutil
 from pyrogram import Client, filters
+from pyrogram.types import InputMediaPhoto, InputMediaVideo
 from apify_client import ApifyClient
 
 # ==========================================
@@ -22,18 +23,23 @@ APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 
+# 🔥 Global variable to handle the /stop command
+STOP_PROCESS = False
+
 # ==========================================
-# 2. APIFY DATA EXTRACTOR & SEPARATOR
+# 2. APIFY DATA EXTRACTOR (FULL PAGINATION)
 # ==========================================
 def extract_media_from_apify(username):
-    # 🔥 MAX LIMIT SET: Ab ye profile ko end tak scrape karega
+    # Apify ki actor settings for full profile extraction
     run_input = {
         "directUrls": [
             f"https://www.instagram.com/{username}/",
             f"https://www.instagram.com/{username}/reels/"
         ],
         "resultsType": "posts",
-        "resultsLimit": 9999  # Pura max fetch karne ke liye
+        "resultsLimit": 9999,
+        "searchType": "hashtag", # Fallback default
+        "searchLimit": 1
     }
     
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
@@ -46,6 +52,7 @@ def extract_media_from_apify(username):
     if not dataset_id:
         raise Exception("Apify se Dataset ID nahi mili.")
 
+    # Fetch ALL items from dataset
     items = apify_client.dataset(dataset_id).list_items().items
     
     video_ig_links = []
@@ -55,73 +62,56 @@ def extract_media_from_apify(username):
         item_type = item.get("type")
         ig_post_url = item.get("url")
         
-        # Reels / Videos
         if item_type == "Video":
             video_ig_links.append(ig_post_url)
-            
-        # Single Image
         elif item_type == "Image":
             img_url = item.get("displayUrl")
-            if img_url:
-                direct_image_urls.append(img_url)
-                
-        # Carousel / Sidecar
+            if img_url: direct_image_urls.append(img_url)
         elif item_type == "Sidecar":
             images = item.get("images", [])
-            for img in images:
-                direct_image_urls.append(img)
-            
-            # Check for carousel video
+            for img in images: direct_image_urls.append(img)
             if item.get("videoUrl"):
                 video_ig_links.append(ig_post_url)
                 
     return list(set(video_ig_links)), list(set(direct_image_urls))
 
 # ==========================================
-# 3. YT-DLP VIDEO DOWNLOADER
+# 3. STOP COMMAND LOGIC
 # ==========================================
-def download_videos_ytdl(links, username):
-    if not links:
-        return True, "No video links to download"
-        
-    if INSTA_SESSION:
-        with open("cookies.txt", "w") as f:
-            f.write(f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n")
-            
-    ydl_opts = {
-        'outtmpl': f'{username}/%(id)s.%(ext)s', 
-        'quiet': True,
-        'no_warnings': True,
-        'format': 'best',
-        'ignoreerrors': True,
-    }
-    
-    if INSTA_SESSION: ydl_opts['cookiefile'] = 'cookies.txt'
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download(links)
-        return True, "Success"
-    except Exception as e:
-        return False, str(e)
-    finally:
-        if os.path.exists("cookies.txt"): os.remove("cookies.txt")
+@app.on_message(filters.command("stop"))
+async def stop_process(client, message):
+    global STOP_PROCESS
+    STOP_PROCESS = True
+    await message.reply_text("🛑 **STOP COMMAND RECEIVED!**\nAbhi chal raha task ruk jayega aur download hui saari files server se delete ho jayengi.")
 
 # ==========================================
-# 4. MAIN BOT LOGIC
+# 4. CHUNK HELPER FUNCTION
+# ==========================================
+def chunk_list(lst, n):
+    """List ko n-size ke chote tukdon (albums) me divide karne ke liye"""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+# ==========================================
+# 5. MAIN BOT LOGIC
 # ==========================================
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
+    global STOP_PROCESS
+    
     if message.command[0] == "start":
-        await message.reply_text("🚀 Bulk Insta Downloader Bot!\nUsage: `/insta username`")
+        await message.reply_text("🚀 Ultimate Album Downloader Bot!\nUsage: `/insta username`\nTo abort: `/stop`")
         return
 
     if len(message.command) < 2:
         await message.reply_text("⚠️ Bhai, username ya link dena padega!")
         return
 
+    # Process start karne se pehle stop flag ko reset karo
+    STOP_PROCESS = False
+    
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 **{target_username}** ki poori profile aur reels scan ho rahi hain...\n(Max posts hain, 1-2 minute lag sakte hain ⏳)")
+    status_msg = await message.reply_text(f"🔍 **{target_username}** ki poori profile aur reels fetch ho rahi hain...\n(Isme thoda time lagega ⏳)")
 
     try:
         video_links, image_urls = await asyncio.to_thread(extract_media_from_apify, target_username)
@@ -129,11 +119,15 @@ async def fetch_insta(client, message):
         await status_msg.edit_text(f"❌ Apify Error: {e}")
         return
 
+    if STOP_PROCESS:
+        await status_msg.edit_text("🚫 Process Cancelled via /stop command.")
+        return
+
     if not video_links and not image_urls:
         await status_msg.edit_text(f"⚠️ Koi post ya reel nahi mili.")
         return
 
-    await status_msg.edit_text(f"🔗 Analysis Complete!\n🎥 Reels/Videos (yt-dlp): **{len(video_links)}**\n📸 Photos (Direct): **{len(image_urls)}**\n\n⏳ Ab Bulk Download aur Upload start ho raha hai (Flood-Wait Protection Active 🛡️)...")
+    await status_msg.edit_text(f"🔗 Analysis Complete!\n🎥 Reels/Videos (yt-dlp): **{len(video_links)}**\n📸 Photos (Direct): **{len(image_urls)}**\n\n⏳ Ab Download aur Album Upload start ho raha hai...")
 
     if not os.path.exists(target_username):
         os.makedirs(target_username)
@@ -142,62 +136,118 @@ async def fetch_insta(client, message):
     caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
 
     # ==========================================
-    # 5. DOWNLOAD & UPLOAD PHOTOS (WITH BATCH DELAY)
+    # PHASE A: DOWNLOAD & UPLOAD PHOTOS (IN ALBUMS OF 10)
     # ==========================================
-    for i, img_url in enumerate(image_urls):
-        try:
-            temp_img = f"{target_username}/photo_{i}_{int(time.time())}.jpg"
-            dl_res = await asyncio.to_thread(requests.get, img_url, stream=True)
-            if dl_res.status_code == 200:
-                with open(temp_img, 'wb') as f:
-                    for chunk in dl_res.iter_content(1024):
-                        f.write(chunk)
-                await app.send_photo(CHANNEL_ID, photo=temp_img, caption=caption_text)
-                upload_count += 1
-                os.remove(temp_img)
+    if image_urls:
+        # Download all images first
+        downloaded_images = []
+        for i, img_url in enumerate(image_urls):
+            if STOP_PROCESS: break
+            try:
+                temp_img = f"{target_username}/photo_{i}_{int(time.time())}.jpg"
+                dl_res = await asyncio.to_thread(requests.get, img_url, stream=True)
+                if dl_res.status_code == 200:
+                    with open(temp_img, 'wb') as f:
+                        for chunk in dl_res.iter_content(1024): f.write(chunk)
+                    downloaded_images.append(temp_img)
+            except Exception as e:
+                print(f"Direct Image DL failed: {e}")
 
-                # 🔥 FLOOD WAIT PROTECTION (Every 10 uploads -> 12 sec sleep)
-                if upload_count % 10 == 0:
-                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} files. Flood-wait se bachne ke liye 12 seconds break le raha hu... 💤")
-                    await asyncio.sleep(12)
-                else:
-                    await asyncio.sleep(1.5) # Normal delay
-        except Exception as e:
-            print(f"Direct Image DL failed: {e}")
+        # Create Albums and Upload
+        for chunk in chunk_list(downloaded_images, 10):
+            if STOP_PROCESS: break
+            
+            media_group = []
+            for idx, img_path in enumerate(chunk):
+                # Sirf pehli image par caption lagayenge
+                cap = caption_text if idx == 0 else ""
+                media_group.append(InputMediaPhoto(media=img_path, caption=cap))
+            
+            if media_group:
+                try:
+                    await app.send_media_group(CHANNEL_ID, media=media_group)
+                    upload_count += len(media_group)
+                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} media files as Albums... 💤")
+                    await asyncio.sleep(12) # Flood Wait Delay after every album
+                except Exception as e:
+                    print(f"Photo Album Upload Error: {e}")
+                    
+        # Cleanup photos after upload
+        for img_path in downloaded_images:
+            if os.path.exists(img_path): os.remove(img_path)
+
+    if STOP_PROCESS:
+        shutil.rmtree(target_username, ignore_errors=True)
+        await status_msg.edit_text("🚫 Process Cancelled via /stop command. Saari downloaded files delete ho chuki hain.")
+        return
 
     # ==========================================
-    # 6. DOWNLOAD & UPLOAD VIDEOS (WITH BATCH DELAY)
+    # PHASE B: DOWNLOAD & UPLOAD VIDEOS (IN ALBUMS OF 10)
     # ==========================================
     if video_links:
-        # First download all videos via yt-dlp
-        await status_msg.edit_text(f"📥 Videos download ho rahi hain (yt-dlp). Uploading resume hogi jaldi hi... ({upload_count} done)")
-        success, err = await asyncio.to_thread(download_videos_ytdl, video_links, target_username)
+        await status_msg.edit_text(f"📥 Videos download ho rahi hain (yt-dlp)...")
         
-        video_files = glob.glob(f"{target_username}/*.mp4")
-        for file in video_files:
-            try:
-                await app.send_video(CHANNEL_ID, video=file, caption=caption_text)
-                upload_count += 1
-                os.remove(file)
+        # Cookie file for yt-dlp
+        if INSTA_SESSION:
+            with open("cookies.txt", "w") as f:
+                f.write(f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n")
                 
-                # 🔥 FLOOD WAIT PROTECTION (Every 10 uploads -> 12 sec sleep)
-                if upload_count % 10 == 0:
-                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} files. Flood-wait se bachne ke liye 12 seconds break le raha hu... 💤")
-                    await asyncio.sleep(12)
-                else:
-                    await asyncio.sleep(1.5) # Normal delay
-            except Exception as e:
-                print(f"Video Upload Error: {e}")
+        ydl_opts = {
+            'outtmpl': f'{target_username}/%(id)s.%(ext)s', 
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'best',
+            'ignoreerrors': True,
+        }
+        if INSTA_SESSION: ydl_opts['cookiefile'] = 'cookies.txt'
 
-    # Folder cleanup
-    try: os.rmdir(target_username)
-    except: pass
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download(video_links)
+        except Exception as e:
+            print(f"YT-DLP Error: {e}")
+        finally:
+            if os.path.exists("cookies.txt"): os.remove("cookies.txt")
+            
+        if STOP_PROCESS:
+            shutil.rmtree(target_username, ignore_errors=True)
+            await status_msg.edit_text("🚫 Process Cancelled via /stop command. Saari downloaded files delete ho chuki hain.")
+            return
 
-    if upload_count > 0:
-        await status_msg.edit_text(f"✅ BINGO! **{upload_count}** Media Files (Photos + Reels) channel pe successfully upload ho chuki hain! 🚀🔥")
+        # Upload Videos in Albums
+        video_files = glob.glob(f"{target_username}/*.mp4")
+        for chunk in chunk_list(video_files, 10):
+            if STOP_PROCESS: break
+            
+            media_group = []
+            for idx, vid_path in enumerate(chunk):
+                cap = caption_text if idx == 0 else ""
+                media_group.append(InputMediaVideo(media=vid_path, caption=cap))
+            
+            if media_group:
+                try:
+                    await app.send_media_group(CHANNEL_ID, media=media_group)
+                    upload_count += len(media_group)
+                    await status_msg.edit_text(f"⏳ Uploaded {upload_count} media files as Albums... 💤")
+                    await asyncio.sleep(12) # Flood Wait Delay after every album
+                except Exception as e:
+                    print(f"Video Album Upload Error: {e}")
+                    
+        # Cleanup videos
+        for vid_path in video_files:
+            if os.path.exists(vid_path): os.remove(vid_path)
+
+    # Final Folder cleanup
+    shutil.rmtree(target_username, ignore_errors=True)
+
+    if STOP_PROCESS:
+        await status_msg.edit_text(f"🛑 Stopped manually! {upload_count} media files upload hui hain.")
+    elif upload_count > 0:
+        await status_msg.edit_text(f"✅ BINGO! **{upload_count}** Media Files channel pe Album format mein successfully upload ho chuki hain! 🚀🔥")
     else:
         await status_msg.edit_text(f"⚠️ Media mili par upload nahi ho payi. Logs check karein.")
 
 if __name__ == "__main__":
-    print("🚀 Ultimate Bulk Downloader Bot Started!")
+    print("🚀 Ultimate Album Downloader Bot Started!")
     app.run()
+    
