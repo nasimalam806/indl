@@ -2,8 +2,6 @@ import os
 import glob
 import asyncio
 import instaloader
-import time
-import random
 from pyrogram import Client, filters
 
 # ==========================================
@@ -12,12 +10,17 @@ from pyrogram import Client, filters
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Make sure to keep the channel ID hardcoded if it doesn't change, 
+# or use int(os.environ.get("CHANNEL_ID")) if you add it to variables
 CHANNEL_ID = -1002443275235  
+
+# Get Insta Session ID from Railway Environment
+INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
-# 2. INSTALOADER SETUP (FAIL-FAST)
+# 2. INSTALOADER SETUP & LOGIN
 # ==========================================
 L = instaloader.Instaloader(
     download_pictures=True, 
@@ -25,22 +28,20 @@ L = instaloader.Instaloader(
     download_geotags=False, 
     download_comments=False, 
     save_metadata=False,
-    request_timeout=15,         # 🔥 300 se ghata kar 15s kar diya taaki hang na ho
-    max_connection_attempts=1   # 🔥 Fail hone par infinite retry na kare, seedha error de
+    request_timeout=300 # Timeout badha diya taaki rate limit na aaye
 )
 
-# Fake Headers
-L.context._session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1'
-})
+# Agar session id variable me hai, toh login inject karo
+if INSTA_SESSION:
+    try:
+        L.context._session.cookies.set('sessionid', INSTA_SESSION, domain='instagram.com')
+        # Check login status
+        L.test_login()
+        print("✅ Instagram Successfully Logged In using Session ID!")
+    except Exception as e:
+        print(f"⚠️ Instagram Login Failed. Check your Session ID. Error: {e}")
+else:
+    print("⚠️ No INSTA_SESSION_ID found in variables. Running anonymously (Will likely get blocked).")
 
 # ==========================================
 # 3. MAIN DOWNLOAD FUNCTION
@@ -48,7 +49,7 @@ L.context._session.headers.update({
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Insta Profile Downloader me swagat hai (Anonymous Mode)!\nUsage: `/insta username`\nExample: `/insta therock`")
+        await message.reply_text("🚀 Insta Profile Downloader me swagat hai!\nUsage: `/insta username`\nExample: `/insta therock`")
         return
 
     if len(message.command) < 2:
@@ -63,35 +64,29 @@ async def fetch_insta(client, message):
             profile = instaloader.Profile.from_username(L.context, target_username)
             count = 0
             for post in profile.get_posts():
-                if count >= 3: 
+                if count >= 5: 
                     break
-                time.sleep(random.uniform(3, 7)) 
                 L.download_post(post, target=target_username)
                 count += 1
             return True, "Success"
         except Exception as e:
             return False, str(e)
 
-    await status_msg.edit_text(f"⏳ Downloading recent 3 posts of **{target_username}** locally... (Max wait: 20 seconds)")
+    await status_msg.edit_text(f"⏳ Downloading recent 5 posts of **{target_username}** locally... (Rate limit bachane ke liye thoda aaram se kar raha hu)")
     
-    # Background process with a strict hard-timeout to prevent any frozen threads
-    try:
-        success, error_msg = await asyncio.wait_for(asyncio.to_thread(download_posts), timeout=60.0)
-    except asyncio.TimeoutError:
-        await status_msg.edit_text("❌ Instagram ne server block kar diya hai (Timeout). Connection drop ho gaya.")
-        return
+    success, error_msg = await asyncio.to_thread(download_posts)
 
     if not success:
-        if "429" in error_msg or "Too Many Requests" in error_msg or "LoginRequiredException" in error_msg or "Redirected" in error_msg:
-             await status_msg.edit_text(f"❌ Instagram Rate Limit/Login Error.\nBina login ke Instagram ne humari Railway IP ko block kar diya hai.\nDetails: {error_msg}")
+        if "429" in error_msg or "Too Many Requests" in error_msg:
+             await status_msg.edit_text(f"❌ Instagram Rate Limit Error (429).\nInstagram ne block kar diya hai. Apna INSTA_SESSION_ID Railway me check karein ya thodi der baad try karein.\nDetails: {error_msg}")
         else:
-            await status_msg.edit_text(f"❌ Instagram Error: {error_msg}\n\n(Note: Account private ya delete ho sakta hai)")
+            await status_msg.edit_text(f"❌ Instagram Error: {error_msg}\n\n(Note: Private account ya rate-limit issue ho sakta hai)")
         return
 
-    await status_msg.edit_text("📤 Uploading files to Telegram Channel...")
+    await status_msg.edit_text("📤 Uploading all downloaded files to your Telegram Channel...")
 
     # ==========================================
-    # 4. UPLOAD & CLEANUP
+    # 4. UPLOAD TO CHANNEL & CLEANUP
     # ==========================================
     folder_path = target_username
     upload_count = 0
@@ -112,12 +107,17 @@ async def fetch_insta(client, message):
                     
                 os.remove(file)
             except Exception as e:
-                if os.path.exists(file): os.remove(file)
+                print(f"Upload fail hua: {file} - Error: {e}")
+                if os.path.exists(file):
+                    os.remove(file)
         
-        try: os.rmdir(folder_path)
-        except: pass
+        try:
+            os.rmdir(folder_path)
+        except: 
+            pass
             
-    await status_msg.edit_text(f"✅ Success! **{upload_count}** posts/reels sent to channel.")
+    await status_msg.edit_text(f"✅ Success! **{upload_count}** posts/reels aapke channel pe bhej diye gaye hain.")
 
 if __name__ == "__main__":
+    print("Insta Downloader Bot Started with Secure Environment Variables!")
     app.run()
