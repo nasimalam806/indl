@@ -1,6 +1,7 @@
 import os
 import requests
 import asyncio
+import time
 from pyrogram import Client, filters
 
 # ==========================================
@@ -60,7 +61,6 @@ async def fetch_insta(client, message):
     # ==========================================
     media_list = []
     
-    # ⚠️ NAYA LOGIC: RapidAPI structure ke hisaab se (data['posts'][x]['node'])
     posts = data.get('posts', [])
     
     if not posts:
@@ -90,27 +90,51 @@ async def fetch_insta(client, message):
         await status_msg.edit_text("⚠️ Data mila, par download links extract nahi ho paye.")
         return
 
-    await status_msg.edit_text(f"📥 {len(media_list)} Media files mil gayi! Telegram channel me upload kar raha hu...")
+    await status_msg.edit_text(f"📥 {len(media_list)} Media files mil gayi! Server par download karke Telegram bhej raha hu...")
 
     # ==========================================
-    # 5. DIRECT UPLOAD TO CHANNEL
+    # 5. DOWNLOAD & UPLOAD TO CHANNEL
     # ==========================================
     upload_count = 0
     caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
 
-    for media_url, m_type in media_list:
+    for index, (media_url, m_type) in enumerate(media_list):
+        # File ka extension aur naam decide karna
+        ext = ".mp4" if m_type == 'video' else ".jpg"
+        temp_file = f"{target_username}_media_{index}_{int(time.time())}{ext}"
+        
         try:
-            if m_type == 'video':
-                await app.send_video(CHANNEL_ID, video=media_url, caption=caption_text)
+            # 1. Instagram se file download karo
+            dl_res = await asyncio.to_thread(requests.get, media_url, stream=True)
+            if dl_res.status_code == 200:
+                with open(temp_file, 'wb') as f:
+                    for chunk in dl_res.iter_content(chunk_size=1024*1024):
+                        if chunk: f.write(chunk)
             else:
-                await app.send_photo(CHANNEL_ID, photo=media_url, caption=caption_text)
+                print(f"Failed to download {media_url}")
+                continue
+
+            # 2. Telegram par upload karo
+            if m_type == 'video':
+                await app.send_video(CHANNEL_ID, video=temp_file, caption=caption_text)
+            else:
+                await app.send_photo(CHANNEL_ID, photo=temp_file, caption=caption_text)
+            
             upload_count += 1
-            await asyncio.sleep(1) # Flood wait bachane ke liye delay
+            
+            # 3. File upload hone ke baad server se delete kardo
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                
+            await asyncio.sleep(1) # Flood wait bachane ke liye chota sa delay
+            
         except Exception as e:
-            print(f"Failed to send to Telegram: {e}")
+            print(f"Upload Fail Hua: {e}")
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
             
     await status_msg.edit_text(f"✅ Success! **{upload_count}** posts aapke channel pe upload ho gaye hain! 🚀")
 
 if __name__ == "__main__":
-    print("🚀 Bot Started with Fixed RapidAPI Parser!")
+    print("🚀 Bot Started with RapidAPI & Local Downloader!")
     app.run()
