@@ -17,22 +17,20 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
 # ==========================================
-# 2. MAIN DOWNLOAD FUNCTION (RAPIDAPI METHOD)
+# 2. MAIN DOWNLOAD FUNCTION (RAPIDAPI)
 # ==========================================
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 API Insta Downloader me swagat hai!\nUsage: `/insta username`\nExample: `/insta therock`")
+        await message.reply_text("🚀 API Insta Downloader me swagat hai!\nUsage: `/insta username`")
         return
 
     if len(message.command) < 2:
         await message.reply_text("⚠️ Bhai, username ya link dena padega!\nAise likho: `/insta therock`")
         return
 
-    # Link ya username clean karna
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    
-    status_msg = await message.reply_text(f"🔍 RapidAPI se **{target_username}** ka data nikal raha hu... (No Blocks, Superfast ⚡)")
+    status_msg = await message.reply_text(f"🔍 RapidAPI se **{target_username}** ka data nikal raha hu... (⚡ Superfast)")
 
     # ==========================================
     # 3. FETCH DATA FROM RAPIDAPI
@@ -41,7 +39,7 @@ async def fetch_insta(client, message):
     
     payload = {
         "username_or_url": f"https://www.instagram.com/{target_username}/",
-        "amount": "5"  # Abhi top 5 posts nikalenge
+        "amount": "5"  # Top 5 posts
     }
     
     headers = {
@@ -51,16 +49,10 @@ async def fetch_insta(client, message):
     }
 
     try:
-        # API call in background (non-blocking)
         response = await asyncio.to_thread(requests.post, url, data=payload, headers=headers)
         data = response.json()
     except Exception as e:
         await status_msg.edit_text(f"❌ API Request Failed: {e}")
-        return
-
-    # Error checking in API response
-    if "error" in data or response.status_code != 200:
-        await status_msg.edit_text(f"❌ API ne error diya: {data.get('message', 'Unknown Error')}")
         return
 
     # ==========================================
@@ -68,38 +60,40 @@ async def fetch_insta(client, message):
     # ==========================================
     media_list = []
     
-    # API ke JSON structure se posts nikalna
-    items = data.get('data', {}).get('items', []) or data.get('items', []) or data.get('data', [])
+    # ⚠️ NAYA LOGIC: RapidAPI structure ke hisaab se (data['posts'][x]['node'])
+    posts = data.get('posts', [])
     
-    if not items:
+    if not posts:
         await status_msg.edit_text(f"⚠️ **{target_username}** ki profile me koi post nahi mili ya account private hai.")
         return
 
-    for item in items[:5]: # Top 5
-        # Agar Carousel (Album/Multiple Photos) hai
-        if item.get('carousel_media'):
-            first_media = item['carousel_media'][0]
+    for post_item in posts[:5]:
+        node = post_item.get('node', {})
+        
+        # Condition 1: Agar Carousel (Multiple Photos/Videos) hai
+        if node.get('carousel_media'):
+            first_media = node['carousel_media'][0]
             if first_media.get('video_versions'):
                 media_list.append((first_media['video_versions'][0]['url'], 'video'))
-            elif first_media.get('image_versions2'):
+            elif first_media.get('image_versions2') and first_media['image_versions2'].get('candidates'):
                 media_list.append((first_media['image_versions2']['candidates'][0]['url'], 'photo'))
         
-        # Agar single Video hai
-        elif item.get('video_versions'):
-            media_list.append((item['video_versions'][0]['url'], 'video'))
+        # Condition 2: Agar single Video/Reel hai
+        elif node.get('video_versions'):
+            media_list.append((node['video_versions'][0]['url'], 'video'))
             
-        # Agar single Photo hai
-        elif item.get('image_versions2'):
-            media_list.append((item['image_versions2']['candidates'][0]['url'], 'photo'))
+        # Condition 3: Agar single Photo hai
+        elif node.get('image_versions2') and node['image_versions2'].get('candidates'):
+            media_list.append((node['image_versions2']['candidates'][0]['url'], 'photo'))
 
     if not media_list:
-        await status_msg.edit_text("⚠️ Data toh mila, par media URLs nikalne me dikkat aayi.")
+        await status_msg.edit_text("⚠️ Data mila, par download links extract nahi ho paye.")
         return
 
-    await status_msg.edit_text(f"📥 {len(media_list)} Media files mil gayi! Telegram channel me bhej raha hu...")
+    await status_msg.edit_text(f"📥 {len(media_list)} Media files mil gayi! Telegram channel me upload kar raha hu...")
 
     # ==========================================
-    # 5. UPLOAD TO CHANNEL
+    # 5. DIRECT UPLOAD TO CHANNEL
     # ==========================================
     upload_count = 0
     caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
@@ -111,12 +105,12 @@ async def fetch_insta(client, message):
             else:
                 await app.send_photo(CHANNEL_ID, photo=media_url, caption=caption_text)
             upload_count += 1
-            await asyncio.sleep(1) # Flood wait bachane ke liye chota sa delay
+            await asyncio.sleep(1) # Flood wait bachane ke liye delay
         except Exception as e:
             print(f"Failed to send to Telegram: {e}")
             
     await status_msg.edit_text(f"✅ Success! **{upload_count}** posts aapke channel pe upload ho gaye hain! 🚀")
 
 if __name__ == "__main__":
-    print("🚀 API Insta Downloader Bot Started Successfully!")
+    print("🚀 Bot Started with Fixed RapidAPI Parser!")
     app.run()
