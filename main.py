@@ -2,6 +2,7 @@ import os
 import glob
 import asyncio
 import yt_dlp
+import json
 from pyrogram import Client, filters
 from apify_client import ApifyClient
 
@@ -17,51 +18,43 @@ INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
 APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
-
-# Apify Client Setup
 apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
 
 # ==========================================
-# 2. APIFY LINK EXTRACTOR (PERFECT PARSER)
+# 2. APIFY LINK EXTRACTOR
 # ==========================================
 def get_links_from_apify(username):
-    # ⚠️ THE REAL FIX: Apify ko sahi format me URL bhejna!
     run_input = {
         "directUrls": [f"https://www.instagram.com/{username}/"],
         "resultsType": "posts",
         "resultsLimit": 5
     }
     
-    # Run the actor
     run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
     
-    # ⚠️ SAFETY NET: Apify object de ya dictionary, ye code dono me se ID nikal lega
     if isinstance(run, dict):
         dataset_id = run.get('defaultDatasetId') or run.get('default_dataset_id')
     else:
         dataset_id = getattr(run, 'defaultDatasetId', None) or getattr(run, 'default_dataset_id', None)
 
     if not dataset_id:
-        raise Exception("Apify se Dataset ID nahi mili. Dashboard check karein.")
+        raise Exception("Apify se Dataset ID nahi mili.")
 
     links = []
-    
-    # Fetch Data from Dataset
     items = apify_client.dataset(dataset_id).list_items().items
+    
     for item in items:
-        # Humein post ki main link chahiye jo yt-dlp download karega
         post_url = item.get("url")
         if post_url and ("instagram.com/p/" in post_url or "instagram.com/reel/" in post_url):
             links.append(post_url)
             
-    # Remove duplicates if any
-    return list(set(links))
+    # Sirf pehli 2 posts ka data return kar rahe hain debug ke liye
+    return list(set(links)), items[:2] 
 
 # ==========================================
 # 3. YT-DLP DOWNLOADER FUNCTION
 # ==========================================
 def download_with_ytdl(links, username):
-    # Cookie Setup
     if INSTA_SESSION:
         cookie_text = f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n"
         with open("cookies.txt", "w") as f:
@@ -72,6 +65,7 @@ def download_with_ytdl(links, username):
         'quiet': True,
         'no_warnings': True,
         'format': 'best',
+        'ignoreerrors': True, # 🔥 FIX: Photo aane par crash nahi hoga, ignore karke next par jayega
     }
     
     if INSTA_SESSION:
@@ -93,32 +87,36 @@ def download_with_ytdl(links, username):
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Premium Apify + yt-dlp Bot!\nUsage: `/insta username`")
+        await message.reply_text("🚀 APIFY + yt-dlp Bot!\nUsage: `/insta username`")
         return
 
     if len(message.command) < 2:
         await message.reply_text("⚠️ Bhai, username ya link dena padega!")
         return
 
-    if not APIFY_TOKEN:
-        await message.reply_text("❌ Railway mein APIFY_API_TOKEN missing hai!")
-        return
-
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** ke links fetch ho rahe hain...\n(Isme 20-30 second lag sakte hain, dhairya rakhein ⏳)")
+    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** fetch kar raha hu...")
 
-    # --- 1. APIFY SE LINKS NIKALNA ---
+    # --- 1. APIFY SE DATA NIKALNA ---
     try:
-        post_links = await asyncio.to_thread(get_links_from_apify, target_username)
+        post_links, raw_items = await asyncio.to_thread(get_links_from_apify, target_username)
     except Exception as e:
         await status_msg.edit_text(f"❌ Apify Error: {e}")
         return
 
     if not post_links:
-        await status_msg.edit_text(f"⚠️ **{target_username}** ki profile me koi post nahi mili ya account private hai.")
+        await status_msg.edit_text(f"⚠️ Koi post nahi mili.")
         return
 
-    await status_msg.edit_text(f"🔗 **{len(post_links)}** Links Apify se mil gaye!\n⏳ Ab `yt-dlp` unhe original quality me download kar raha hai...")
+    # 🔥 DEBUG FEATURE: Show API Response in Telegram
+    try:
+        # JSON ko pretty format karke bhejenge (3500 chars limit taki message fail na ho)
+        raw_data_str = json.dumps(raw_items, indent=2, ensure_ascii=False)[:3500]
+        await message.reply_text(f"🛠️ **APIFY KA RAW RESPONSE (SAMPLE):**\n```json\n{raw_data_str}\n```")
+    except Exception as e:
+        print(f"Debug print fail: {e}")
+
+    await status_msg.edit_text(f"🔗 **{len(post_links)}** Links mil gaye!\n⏳ Ab `yt-dlp` download kar रहा hai (Photo wali posts pe error ignore karega)...")
 
     # --- 2. YT-DLP SE DOWNLOAD KARNA ---
     success, err = await asyncio.to_thread(download_with_ytdl, post_links, target_username)
@@ -151,11 +149,9 @@ async def fetch_insta(client, message):
         except: pass
             
     if upload_count > 0:
-        await status_msg.edit_text(f"✅ Success! **{upload_count}** media files Apify aur yt-dlp se upload ho chuki hain! 🚀")
+        await status_msg.edit_text(f"✅ Success! **{upload_count}** files upload ho chuki hain! 🚀\n*(Note: Sirf video/reels download hui hongi kyunki yt-dlp images me fail hota hai)*")
     else:
-        await status_msg.edit_text(f"⚠️ Apify links laya par yt-dlp download nahi kar paya.\nyt-dlp Error: {err}")
+        await status_msg.edit_text(f"⚠️ yt-dlp ek bhi file download nahi kar paya. Shayad saari posts image thi ya yt-dlp block ho gaya.\nyt-dlp Error: {err}")
 
 if __name__ == "__main__":
-    print("🚀 Premium Apify + yt-dlp Bot Started!")
     app.run()
-    
