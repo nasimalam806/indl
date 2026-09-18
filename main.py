@@ -3,79 +3,114 @@ import glob
 import asyncio
 import yt_dlp
 from pyrogram import Client, filters
+from apify_client import ApifyClient
 
 # ==========================================
-# 1. BOT & CHANNEL CREDENTIALS
+# 1. CREDENTIALS & VARIABLES
 # ==========================================
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = -1002443275235  
 
-# Sirf Insta Session ID chahiye, sab APIs ka kaam khatam!
 INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
+APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
 
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
 
+# Apify Client Initialize karna
+apify_client = ApifyClient(APIFY_TOKEN) if APIFY_TOKEN else None
+
 # ==========================================
-# 2. YT-DLP DIRECT PROFILE EXTRACTOR & DOWNLOADER
+# 2. APIFY LINK EXTRACTOR FUNCTION
 # ==========================================
-def download_profile_with_ytdl(username):
-    # 1. Cookie file banana (Insta login ke liye)
+def get_links_from_apify(username):
+    # Apify ke "Instagram Scraper" actor ko call kar rahe hain
+    run_input = {
+        "usernames": [username],
+        "resultsLimit": 5, # Top 5 posts layega
+    }
+    
+    # Actor run karna (Background me scrape karega)
+    run = apify_client.actor("apify/instagram-scraper").call(run_input=run_input)
+    
+    # Result dataset se links nikalna
+    links = []
+    for item in apify_client.dataset(run["defaultDatasetId"]).iterate_items():
+        if "url" in item:
+            links.append(item["url"])
+            
+    return links
+
+# ==========================================
+# 3. YT-DLP DOWNLOADER FUNCTION
+# ==========================================
+def download_with_ytdl(links, username):
+    # Cookie file banana taaki IG block na kare
     if INSTA_SESSION:
-        # yt-dlp ko Netscape format ki cookies chahiye hoti hain
         cookie_text = f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n"
         with open("cookies.txt", "w") as f:
             f.write(cookie_text)
-    else:
-        return False, "INSTA_SESSION_ID variable Railway me missing hai."
-    
-    # 2. yt-dlp Options
+            
     ydl_opts = {
-        'outtmpl': f'{username}/%(id)s.%(ext)s', # User ke naam ka folder banega
-        'cookiefile': 'cookies.txt',             # 🔥 Cookies inject kardi!
-        'playlistend': 5,                        # 🔥 Limit: Sirf Top 5 Posts/Reels hi laye
+        'outtmpl': f'{username}/%(id)s.%(ext)s', 
         'quiet': True,
         'no_warnings': True,
-        'format': 'best'
+        'format': 'best',
     }
     
+    if INSTA_SESSION:
+        ydl_opts['cookiefile'] = 'cookies.txt'
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Seedha profile ka URL pass kar diya. 
-            # yt-dlp khud profile ke andar ghusega aur posts dhundh kar download kar lega!
-            ydl.download([f"https://www.instagram.com/{username}/"])
+            ydl.download(links)
         return True, "Success"
     except Exception as e:
         return False, str(e)
+    finally:
+        if os.path.exists("cookies.txt"):
+            os.remove("cookies.txt")
 
 # ==========================================
-# 3. MAIN BOT LOGIC
+# 4. MAIN BOT LOGIC
 # ==========================================
 @app.on_message(filters.command("insta") | filters.command("start"))
 async def fetch_insta(client, message):
     if message.command[0] == "start":
-        await message.reply_text("🚀 Ultimate yt-dlp Downloader!\nUsage: `/insta username`")
+        await message.reply_text("🚀 Apify + yt-dlp Downloader me swagat hai!\nUsage: `/insta username`")
         return
 
     if len(message.command) < 2:
         await message.reply_text("⚠️ Bhai, username ya link dena padega!")
         return
 
-    target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    
-    status_msg = await message.reply_text(f"🔍 **{target_username}** ki profile par yt-dlp magic chala raha hu...\n(Ek saath saari media nikal kar download karega, thoda wait kijiye ⏳)")
-
-    # --- YT-DLP PROFILE DOWNLOAD ---
-    success, error_msg = await asyncio.to_thread(download_profile_with_ytdl, target_username)
-
-    if not success:
-        await status_msg.edit_text(f"❌ yt-dlp Error: {error_msg}\n(Session expire ho gaya hai, ya account private hai)")
+    if not APIFY_TOKEN:
+        await message.reply_text("❌ Railway mein APIFY_API_TOKEN missing hai!")
         return
 
-    await status_msg.edit_text("📤 Download complete! Telegram channel me upload ho raha hai...")
+    target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
+    status_msg = await message.reply_text(f"🔍 Apify Cloud se **{target_username}** ke post links nikal raha hu... (इसमें 10-20 सेकंड लग सकते हैं)")
 
-    # --- TELEGRAM PAR UPLOAD KARNA ---
+    # --- 1. APIFY SE LINKS NIKALNA ---
+    try:
+        post_links = await asyncio.to_thread(get_links_from_apify, target_username)
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Apify Error: {e}")
+        return
+
+    if not post_links:
+        await status_msg.edit_text(f"⚠️ **{target_username}** ki profile me koi post nahi mili ya account private hai.")
+        return
+
+    await status_msg.edit_text(f"🔗 **{len(post_links)}** Links successfully mil gaye!\n⏳ Ab `yt-dlp` unhe download kar raha hai...")
+
+    # --- 2. YT-DLP SE DOWNLOAD KARNA ---
+    success, err = await asyncio.to_thread(download_with_ytdl, post_links, target_username)
+
+    await status_msg.edit_text("📤 Download complete! Telegram channel me bhej raha hu...")
+
+    # --- 3. TELEGRAM PAR UPLOAD KARNA ---
     folder_path = target_username
     upload_count = 0
     
@@ -92,7 +127,7 @@ async def fetch_insta(client, message):
                     await app.send_photo(CHANNEL_ID, photo=file, caption=caption_text)
                     upload_count += 1
                 
-                os.remove(file) # Delete immediately after upload
+                os.remove(file)
             except Exception as e:
                 print(f"Upload Error: {e}")
                 if os.path.exists(file): os.remove(file)
@@ -100,15 +135,12 @@ async def fetch_insta(client, message):
         try: os.rmdir(folder_path)
         except: pass
             
-    # Cleanup cookies
-    if os.path.exists("cookies.txt"):
-        os.remove("cookies.txt")
-
     if upload_count > 0:
-        await status_msg.edit_text(f"✅ Success! **{upload_count}** posts/reels yt-dlp ne sidha channel pe bhej diye! 🚀")
+        await status_msg.edit_text(f"✅ Success! **{upload_count}** media files Apify aur yt-dlp ke zariye upload ho chuki hain! 🚀")
     else:
-        await status_msg.edit_text("⚠️ Error: Shayad Instagram ne session verify nahi kiya, cookies fresh daaliye.")
+        await status_msg.edit_text(f"⚠️ Download failed.\nyt-dlp Error: {err}")
 
 if __name__ == "__main__":
-    print("🚀 Ultimate yt-dlp Profile Downloader Started!")
+    print("🚀 Apify + yt-dlp Bot Started!")
     app.run()
+    
