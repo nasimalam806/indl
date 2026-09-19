@@ -193,7 +193,7 @@ async def fetch_insta(client, message):
         await status_msg.edit_text("🚫 Process Cancelled via /stop command.")
         return
 
-    # --- PHASE B: VIDEOS UPLOAD (ALBUMS OF 5) ---
+    # --- PHASE B: VIDEOS UPLOAD (ALBUMS OF 10 WITH FORCE VIDEO) ---
     if video_links:
         await status_msg.edit_text(f"📥 Videos download ho rahi hain (yt-dlp)...")
         await asyncio.to_thread(download_videos_ytdl, video_links, target_username)
@@ -205,9 +205,11 @@ async def fetch_insta(client, message):
 
         video_files = [f for f in glob.glob(f"{target_username}/*") if f.lower().endswith(('.mp4', '.webm', '.mkv', '.mov'))]
         
-        for chunk in chunk_list(video_files, 5):
+        # 🔥 FIX: Ab video chunk bhi 10 ka kar diya gaya hai
+        for chunk in chunk_list(video_files, 10):
             if STOP_PROCESS: break
-            media_group = [InputMediaVideo(media=vid_path, caption=caption_text if idx == 0 else "") for idx, vid_path in enumerate(chunk)]
+            # 🔥 FIX: supports_streaming=True lagaya taki GIF na bane!
+            media_group = [InputMediaVideo(media=vid_path, caption=caption_text if idx == 0 else "", supports_streaming=True) for idx, vid_path in enumerate(chunk)]
             
             if media_group:
                 try:
@@ -217,9 +219,10 @@ async def fetch_insta(client, message):
                     await asyncio.sleep(15) 
                 except Exception as e:
                     print(f"Video Album Upload Error: {e}")
+                    # Fallback if album fails (force video here as well)
                     for vid in chunk:
                         try:
-                            await app.send_video(CHANNEL_ID, video=vid, caption=caption_text)
+                            await app.send_video(CHANNEL_ID, video=vid, caption=caption_text, supports_streaming=True)
                             upload_count += 1
                             await asyncio.sleep(3)
                         except: pass
