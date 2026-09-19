@@ -25,25 +25,36 @@ app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN,
 STOP_PROCESS = False
 
 # ==========================================
-# 2. INSTAGRAPI SCANNER (UNLIMITED SCROLL)
+# 2. INSTAGRAPI SCANNER (HUMAN-LIKE STEALTH MODE)
 # ==========================================
 def extract_media_from_profile(username):
     if not INSTA_SESSION:
         raise Exception("INSTA_SESSION_ID Railway variables me nahi hai!")
 
     cl = InstaClient()
+    
+    # 🔥 ANTI-BAN: Human-like delay settings (random delays between 5 to 15 seconds)
+    cl.delay_range = [5, 15]
+    cl.request_timeout = 30  # Timeout badha diya gaya hai
+
     try:
         cl.login_by_sessionid(INSTA_SESSION)
     except Exception as e:
         raise Exception(f"Login failed! Session ID expire ho gaya hai. Naya Session ID dalein. Error: {e}")
 
     try:
+        # User ID dhundhne ke baad bhi thoda ruko
         user_id = cl.user_id_from_username(username)
+        time.sleep(3) 
     except Exception as e:
         raise Exception(f"Username nahi mila. Error: {e}")
 
-    # Fetch ALL Grid Posts and ALL Reels (Limit 200 set hai, badha bhi sakte hain)
+    # Fetch ALL Grid Posts and ALL Reels (Limit 250, par ab ye dheere-dheere ayega)
     grid_posts = cl.user_medias(user_id, amount=250)
+    
+    # Grid scroll karne aur Reels scroll karne ke beech lamba break
+    time.sleep(7)
+    
     reels_clips = cl.user_clips(user_id, amount=250)
     
     all_media = grid_posts + reels_clips
@@ -123,7 +134,7 @@ async def fetch_insta(client, message):
     global STOP_PROCESS
     
     if message.command[0] == "start":
-        await message.reply_text("🚀 Unlimited Pro Downloader Bot!\nUsage: `/insta username`\nTo abort: `/stop`")
+        await message.reply_text("🚀 Unlimited Pro Downloader Bot (Safe Mode)!\nUsage: `/insta username`\nTo abort: `/stop`")
         return
 
     if len(message.command) < 2:
@@ -133,7 +144,7 @@ async def fetch_insta(client, message):
     STOP_PROCESS = False
     
     target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 **{target_username}** ki profile Instagrapi se scan ho rahi hai...\n(100% Reels aur Posts dhundh raha hu ⏳)")
+    status_msg = await message.reply_text(f"🔍 **{target_username}** ki profile scan ho rahi hai...\n(Safe Mode ON: Slow scroll chal raha hai taaki IG block na kare ⏳)")
 
     try:
         video_links, image_urls = await asyncio.to_thread(extract_media_from_profile, target_username)
@@ -205,10 +216,8 @@ async def fetch_insta(client, message):
 
         video_files = [f for f in glob.glob(f"{target_username}/*") if f.lower().endswith(('.mp4', '.webm', '.mkv', '.mov'))]
         
-        # 🔥 FIX: Ab video chunk bhi 10 ka kar diya gaya hai
         for chunk in chunk_list(video_files, 10):
             if STOP_PROCESS: break
-            # 🔥 FIX: supports_streaming=True lagaya taki GIF na bane!
             media_group = [InputMediaVideo(media=vid_path, caption=caption_text if idx == 0 else "", supports_streaming=True) for idx, vid_path in enumerate(chunk)]
             
             if media_group:
@@ -219,7 +228,6 @@ async def fetch_insta(client, message):
                     await asyncio.sleep(15) 
                 except Exception as e:
                     print(f"Video Album Upload Error: {e}")
-                    # Fallback if album fails (force video here as well)
                     for vid in chunk:
                         try:
                             await app.send_video(CHANNEL_ID, video=vid, caption=caption_text, supports_streaming=True)
@@ -240,5 +248,5 @@ async def fetch_insta(client, message):
         await status_msg.edit_text(f"⚠️ Media mili par upload nahi ho payi. Logs check karein.")
 
 if __name__ == "__main__":
-    print("🚀 Pro Album Downloader Bot Started!")
+    print("🚀 Pro Album Downloader Bot (Safe Mode) Started!")
     app.run()
