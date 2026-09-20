@@ -64,7 +64,7 @@ async def stop_process(client, message):
 
 @app.on_message(filters.command("start"))
 async def start_msg(client, message):
-    await message.reply_text("🚀 JSON Downloader Bot Active!\nApne Termux se generate ki hui `.json` file yahan send karo aur main download start kar dunga.\nRokne ke liye: `/stop`")
+    await message.reply_text("🚀 JSON Downloader Bot Active!\nApne Termux se generate ki hui `.json` file yahan send karo aur main download start kar dunga.\nRokne ke liye: `/stop` ok")
 
 # ==========================================
 # 4. JSON PROCESSING & ALBUM UPLOAD
