@@ -1,6 +1,3 @@
-# ==========================================
-# RAILWAY SERVER BOT (main.py)
-# ==========================================
 import os
 import glob
 import asyncio
@@ -11,7 +8,12 @@ import shutil
 import json
 from pyrogram import Client, filters
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
+from pyrogram.errors import MessageNotModified, FloodWait
+from yt_dlp.networking.impersonate import ImpersonateTarget
 
+# ==========================================
+# 1. CREDENTIALS & VARIABLES
+# ==========================================
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -24,14 +26,25 @@ def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
+# ==========================================
+# 2. YT-DLP DOWNLOADER (NO SESSION ID NEEDED)
+# ==========================================
 def download_videos_ytdl(links, username):
     if not links: return True, "No links"
+    
+    # 🔥 The MAGIC: Impersonate Target for Instagram 
     ydl_opts = {
         'outtmpl': f'{username}/%(id)s.%(ext)s', 
         'quiet': True,
         'no_warnings': True,
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'ignoreerrors': True,
+        'socket_timeout': 15,
+        'retries': 3,
+        'impersonate': ImpersonateTarget.from_str('chrome'), # <-- This mimics a real browser!
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -40,6 +53,9 @@ def download_videos_ytdl(links, username):
     except Exception as e:
         return False, str(e)
 
+# ==========================================
+# 3. COMMANDS
+# ==========================================
 @app.on_message(filters.command("stop"))
 async def stop_process(client, message):
     global STOP_PROCESS
@@ -50,7 +66,9 @@ async def stop_process(client, message):
 async def start_msg(client, message):
     await message.reply_text("🚀 JSON Downloader Bot Active!\nApne Termux se generate ki hui `.json` file yahan send karo aur main download start kar dunga.\nRokne ke liye: `/stop`")
 
-# 🔥 JAISE HI AAP JSON FILE BHEJENGE, YE FUNCTION CHALEGA
+# ==========================================
+# 4. JSON PROCESSING & ALBUM UPLOAD
+# ==========================================
 @app.on_message(filters.document)
 async def process_json(client, message):
     global STOP_PROCESS
@@ -75,7 +93,7 @@ async def process_json(client, message):
         os.remove(file_path)
         return
 
-    os.remove(file_path) # Delete json file from server
+    os.remove(file_path) 
     
     await status_msg.edit_text(f"🔗 File Loaded Successfully!\n👤 Profile: **{target_username}**\n🎥 Videos: **{len(video_links)}**\n📸 Photos: **{len(image_urls)}**\n\n⏳ Ab High-Speed Server Download aur Upload start ho raha hai...")
 
@@ -122,7 +140,7 @@ async def process_json(client, message):
 
     # --- PHASE B: VIDEOS (ALBUMS OF 10) ---
     if video_links:
-        await status_msg.edit_text(f"📥 High-Speed Server se Videos download ho rahi hain...")
+        await status_msg.edit_text(f"📥 High-Speed Server se Videos download ho rahi hain (No Login Needed!)...")
         await asyncio.to_thread(download_videos_ytdl, video_links, target_username)
             
         if STOP_PROCESS:
