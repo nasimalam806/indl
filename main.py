@@ -1,3 +1,6 @@
+# ==========================================
+# RAILWAY SERVER BOT (main.py)
+# ==========================================
 import os
 import glob
 import asyncio
@@ -5,162 +8,76 @@ import yt_dlp
 import requests
 import time
 import shutil
+import json
 from pyrogram import Client, filters
 from pyrogram.types import InputMediaPhoto, InputMediaVideo
-from instagrapi import Client as InstaClient
 
-# ==========================================
-# 1. CREDENTIALS & VARIABLES
-# ==========================================
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 CHANNEL_ID = -1002443275235  
 
-INSTA_SESSION = os.environ.get("INSTA_SESSION_ID")
-
 app = Client("insta_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
-
-# 🔥 Global variable for /stop command
 STOP_PROCESS = False
-
-# ==========================================
-# 2. INSTAGRAPI SCANNER (HUMAN-LIKE STEALTH MODE)
-# ==========================================
-def extract_media_from_profile(username):
-    if not INSTA_SESSION:
-        raise Exception("INSTA_SESSION_ID Railway variables me nahi hai!")
-
-    cl = InstaClient()
-    
-    # 🔥 ANTI-BAN: Human-like delay settings (random delays between 5 to 15 seconds)
-    cl.delay_range = [5, 15]
-    cl.request_timeout = 30  # Timeout badha diya gaya hai
-
-    try:
-        cl.login_by_sessionid(INSTA_SESSION)
-    except Exception as e:
-        raise Exception(f"Login failed! Session ID expire ho gaya hai. Naya Session ID dalein. Error: {e}")
-
-    try:
-        # User ID dhundhne ke baad bhi thoda ruko
-        user_id = cl.user_id_from_username(username)
-        time.sleep(3) 
-    except Exception as e:
-        raise Exception(f"Username nahi mila. Error: {e}")
-
-    # Fetch ALL Grid Posts and ALL Reels (Limit 250, par ab ye dheere-dheere ayega)
-    grid_posts = cl.user_medias(user_id, amount=250)
-    
-    # Grid scroll karne aur Reels scroll karne ke beech lamba break
-    time.sleep(7)
-    
-    reels_clips = cl.user_clips(user_id, amount=250)
-    
-    all_media = grid_posts + reels_clips
-    
-    video_ig_links = []
-    direct_image_urls = []
-
-    for m in all_media:
-        shortcode_url = f"https://www.instagram.com/p/{m.code}/"
-        
-        # 1 = Photo, 2 = Video/Reel, 8 = Carousel/Album
-        if m.media_type == 1:
-            direct_image_urls.append(str(m.thumbnail_url))
-        elif m.media_type == 2:
-            video_ig_links.append(shortcode_url)
-        elif m.media_type == 8:
-            has_video = False
-            for res in m.resources:
-                if res.media_type == 1:
-                    direct_image_urls.append(str(res.thumbnail_url))
-                elif res.media_type == 2:
-                    has_video = True
-            
-            # Agar carousel me koi video hai, to yt-dlp ko shortcode de do
-            if has_video:
-                video_ig_links.append(shortcode_url)
-
-    return list(set(video_ig_links)), list(set(direct_image_urls))
-
-# ==========================================
-# 3. STOP COMMAND & CHUNK HELPER
-# ==========================================
-@app.on_message(filters.command("stop"))
-async def stop_process(client, message):
-    global STOP_PROCESS
-    STOP_PROCESS = True
-    await message.reply_text("🛑 **STOP COMMAND RECEIVED!**\nAbhi chal raha task ruk jayega aur download hui saari files delete ho jayengi.")
 
 def chunk_list(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-# ==========================================
-# 4. YT-DLP VIDEO DOWNLOADER
-# ==========================================
 def download_videos_ytdl(links, username):
     if not links: return True, "No links"
-        
-    with open("cookies.txt", "w") as f:
-        f.write(f"# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\t{INSTA_SESSION}\n")
-            
     ydl_opts = {
         'outtmpl': f'{username}/%(id)s.%(ext)s', 
         'quiet': True,
         'no_warnings': True,
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'ignoreerrors': True,
-        'cookiefile': 'cookies.txt',
-        'sleep_interval': 1,
-        'max_sleep_interval': 3,
     }
-
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download(links)
         return True, "Success"
     except Exception as e:
         return False, str(e)
-    finally:
-        if os.path.exists("cookies.txt"): os.remove("cookies.txt")
 
-# ==========================================
-# 5. MAIN BOT LOGIC
-# ==========================================
-@app.on_message(filters.command("insta") | filters.command("start"))
-async def fetch_insta(client, message):
+@app.on_message(filters.command("stop"))
+async def stop_process(client, message):
     global STOP_PROCESS
-    
-    if message.command[0] == "start":
-        await message.reply_text("🚀 Unlimited Pro Downloader Bot (Safe Mode)!\nUsage: `/insta username`\nTo abort: `/stop`")
-        return
+    STOP_PROCESS = True
+    await message.reply_text("🛑 **STOP COMMAND RECEIVED!**\nUpload ruk jayega aur files delete ho jayengi.")
 
-    if len(message.command) < 2:
-        await message.reply_text("⚠️ Bhai, username ya link dena padega!")
+@app.on_message(filters.command("start"))
+async def start_msg(client, message):
+    await message.reply_text("🚀 JSON Downloader Bot Active!\nApne Termux se generate ki hui `.json` file yahan send karo aur main download start kar dunga.\nRokne ke liye: `/stop`")
+
+# 🔥 JAISE HI AAP JSON FILE BHEJENGE, YE FUNCTION CHALEGA
+@app.on_message(filters.document)
+async def process_json(client, message):
+    global STOP_PROCESS
+    if not message.document.file_name.endswith(".json"):
+        await message.reply_text("⚠️ Kripya valid .json file bhejein.")
         return
 
     STOP_PROCESS = False
+    status_msg = await message.reply_text("📥 JSON file download aur padh raha hu...")
     
-    target_username = message.command[1].replace("https://www.instagram.com/", "").replace("/", "").split("?")[0]
-    status_msg = await message.reply_text(f"🔍 **{target_username}** ki profile scan ho rahi hai...\n(Safe Mode ON: Slow scroll chal raha hai taaki IG block na kare ⏳)")
-
+    file_path = await message.download()
+    
     try:
-        video_links, image_urls = await asyncio.to_thread(extract_media_from_profile, target_username)
+        with open(file_path, "r") as f:
+            data = json.load(f)
+        
+        target_username = data.get("username", "unknown")
+        video_links = data.get("videos", [])
+        image_urls = data.get("images", [])
     except Exception as e:
-        await status_msg.edit_text(f"❌ Scanner Error: {e}")
+        await status_msg.edit_text(f"❌ JSON padhne me error: {e}")
+        os.remove(file_path)
         return
 
-    if STOP_PROCESS:
-        await status_msg.edit_text("🚫 Process Cancelled.")
-        return
-
-    if not video_links and not image_urls:
-        await status_msg.edit_text(f"⚠️ Koi post ya reel nahi mili.")
-        return
-
-    await status_msg.edit_text(f"🔗 Scan Complete!\n🎥 Reels/Videos (yt-dlp): **{len(video_links)}**\n📸 Photos (Direct): **{len(image_urls)}**\n\n⏳ Ab Download aur Album Upload start ho raha hai...")
+    os.remove(file_path) # Delete json file from server
+    
+    await status_msg.edit_text(f"🔗 File Loaded Successfully!\n👤 Profile: **{target_username}**\n🎥 Videos: **{len(video_links)}**\n📸 Photos: **{len(image_urls)}**\n\n⏳ Ab High-Speed Server Download aur Upload start ho raha hai...")
 
     if not os.path.exists(target_username):
         os.makedirs(target_username)
@@ -168,7 +85,7 @@ async def fetch_insta(client, message):
     upload_count = 0
     caption_text = f"🔥 Source: [@{target_username}](https://instagram.com/{target_username})"
 
-    # --- PHASE A: PHOTOS UPLOAD (ALBUMS OF 10) ---
+    # --- PHASE A: PHOTOS (ALBUMS OF 10) ---
     if image_urls:
         downloaded_images = []
         for i, img_url in enumerate(image_urls):
@@ -186,7 +103,6 @@ async def fetch_insta(client, message):
         for chunk in chunk_list(downloaded_images, 10):
             if STOP_PROCESS: break
             media_group = [InputMediaPhoto(media=img_path, caption=caption_text if idx == 0 else "") for idx, img_path in enumerate(chunk)]
-            
             if media_group:
                 try:
                     await app.send_media_group(CHANNEL_ID, media=media_group)
@@ -201,17 +117,17 @@ async def fetch_insta(client, message):
 
     if STOP_PROCESS:
         shutil.rmtree(target_username, ignore_errors=True)
-        await status_msg.edit_text("🚫 Process Cancelled via /stop command.")
+        await status_msg.edit_text("🚫 Process Cancelled via /stop.")
         return
 
-    # --- PHASE B: VIDEOS UPLOAD (ALBUMS OF 10 WITH FORCE VIDEO) ---
+    # --- PHASE B: VIDEOS (ALBUMS OF 10) ---
     if video_links:
-        await status_msg.edit_text(f"📥 Videos download ho rahi hain (yt-dlp)...")
+        await status_msg.edit_text(f"📥 High-Speed Server se Videos download ho rahi hain...")
         await asyncio.to_thread(download_videos_ytdl, video_links, target_username)
             
         if STOP_PROCESS:
             shutil.rmtree(target_username, ignore_errors=True)
-            await status_msg.edit_text("🚫 Process Cancelled via /stop command.")
+            await status_msg.edit_text("🚫 Process Cancelled via /stop.")
             return
 
         video_files = [f for f in glob.glob(f"{target_username}/*") if f.lower().endswith(('.mp4', '.webm', '.mkv', '.mov'))]
@@ -219,7 +135,6 @@ async def fetch_insta(client, message):
         for chunk in chunk_list(video_files, 10):
             if STOP_PROCESS: break
             media_group = [InputMediaVideo(media=vid_path, caption=caption_text if idx == 0 else "", supports_streaming=True) for idx, vid_path in enumerate(chunk)]
-            
             if media_group:
                 try:
                     await app.send_media_group(CHANNEL_ID, media=media_group)
@@ -245,8 +160,8 @@ async def fetch_insta(client, message):
     elif upload_count > 0:
         await status_msg.edit_text(f"✅ BINGO! **{upload_count}** Media Files channel pe Album format mein successfully upload ho chuki hain! 🚀🔥")
     else:
-        await status_msg.edit_text(f"⚠️ Media mili par upload nahi ho payi. Logs check karein.")
+        await status_msg.edit_text(f"⚠️ Media nahi mili. Logs check karein.")
 
 if __name__ == "__main__":
-    print("🚀 Pro Album Downloader Bot (Safe Mode) Started!")
+    print("🚀 Server JSON Downloader Bot Started!")
     app.run()
